@@ -7,7 +7,7 @@ func Assert(condition bool, message ...string) Result {
 		if len(message) >= 1 {
 			return ErrResult(errors.New(message[0]))
 		} else {
-			return ErrResult(errors.New(message[0]))
+			return ErrResult(errors.New("condition check failed"))
 		}
 	}
 	return ValResult()

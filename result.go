@@ -82,9 +82,9 @@ func _AnyToError(o any) Error {
 	case Error:
 		return err
 	case error:
-		return NestedError(EInternal, err)
+		return ErrNested(EInternal, err)
 	default:
-		return TaggedError(EInternal, "panic:"+fmt.Sprint(o))
+		return ErrClean(EInternal, "panic:"+fmt.Sprint(o))
 	}
 }
 
