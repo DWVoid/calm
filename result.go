@@ -11,29 +11,19 @@ type ResultT[T any] struct {
 	Result
 }
 
-func Wrap(err error) Result {
-	return Result{err: _AnyToError(err)}
-}
+func Wrap(err error) Result { return Result{err: _AnyToError(err)} }
 
-func WrapT[T any](v T, err error) ResultT[T] {
-	return ResultT[T]{val: v, Result: Wrap(err)}
-}
+func WrapT[T any](v T, err error) ResultT[T] { return ResultT[T]{val: v, Result: Wrap(err)} }
 
-func ValResult() Result {
-	return Wrap(nil)
-}
+func ValResult() Result { return Wrap(nil) }
 
-func ErrResult(err error) Result {
-	return Wrap(err)
-}
+func ErrResult(err error) Result { return Wrap(err) }
 
-func ErrResultT[T any](err error) ResultT[T] {
-	return ResultT[T]{Result: Wrap(err)}
-}
+func ValResultT[T any](v T) ResultT[T] { return ResultT[T]{val: v, Result: Wrap(nil)} }
 
-func ValResultT[T any](v T) ResultT[T] {
-	return ResultT[T]{val: v, Result: Wrap(nil)}
-}
+func ErrResultT[T any](err error) ResultT[T] { return ResultT[T]{Result: Wrap(err)} }
+
+func ResResultU[U any](res ResultT[U]) Result { return res.Result }
 
 func (c Result) Unwrap(onError func(Error)) {
 	if c.err != nil {
@@ -82,7 +72,7 @@ func _AnyToError(o any) Error {
 	case Error:
 		return err
 	case error:
-		return ErrNested(EInternal, err)
+		return ErrErr(EInternal, err)
 	default:
 		return ErrClean(EInternal, "panic:"+fmt.Sprint(o))
 	}

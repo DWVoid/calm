@@ -2,9 +2,38 @@ package calm
 
 import (
 	"fmt"
+	"path"
 	"runtime"
 	"strings"
 )
+
+type StackPrintOptions struct {
+	Formatter func(frame *StackFrame) string
+	TrimStack bool
+}
+
+type StackFrame struct {
+	Func, File string
+	Line       int
+	PC         uintptr
+}
+
+var (
+	FullPrint      = &StackPrintOptions{Formatter: _DefaultPrint, TrimStack: false}
+	TrimFullPrint  = &StackPrintOptions{Formatter: _DefaultPrint, TrimStack: true}
+	ShortPrint     = &StackPrintOptions{Formatter: _DefaultShortPrint, TrimStack: false}
+	TrimShortPrint = &StackPrintOptions{Formatter: _DefaultShortPrint, TrimStack: true}
+)
+
+func _DefaultPrint(f *StackFrame) string {
+	return fmt.Sprintf("[%016x] %s at (%d:%s)\n", f.PC, f.Func, f.Line, f.File)
+}
+
+func _DefaultShortPrint(f *StackFrame) string {
+	_, name := path.Split(f.File)
+	_, fun := path.Split(f.Func)
+	return fmt.Sprintf("%s at (%d:%s)\n", fun, f.Line, name)
+}
 
 type _Slice struct {
 	info  ErrorInfo
@@ -13,7 +42,7 @@ type _Slice struct {
 
 func _Flip(s []_Slice) {
 	head := 0
-	tail := len(s) - 2
+	tail := len(s) - 1
 	for head < tail {
 		tmp := s[head]
 		s[head] = s[tail]
@@ -28,10 +57,10 @@ func _TraceError(e Error) (result []_Slice) {
 	result = make([]_Slice, 0)
 	for {
 		switch n := c.(type) {
-		case *errChain:
+		case *sErrChain:
 			result = append(result, _Slice{info: n.info, trace: n.trace})
 			c = n.next
-		case *errNode:
+		case *sErrNode:
 			result = append(result, _Slice{info: n.info, trace: n.trace})
 			_Flip(result)
 			return
@@ -39,53 +68,86 @@ func _TraceError(e Error) (result []_Slice) {
 	}
 }
 
+func _PrintableErrorTag(info ErrorInfo) string {
+	if reg, ok := _Reg.Load(info.TCode()); ok {
+		return reg.(IErrType).ErrName(info.ECode())
+	} else {
+		return fmt.Sprintf("error[%d:%d]", info.TCode(), info.ECode())
+	}
+}
+
+func _PrintTaggedClean(b *strings.Builder, info ErrorInfo) {
+	b.WriteString(_PrintableErrorTag(info))
+	clean := info.Clean()
+	if clean == "" {
+		clean = pErrDefaultMsgSafe(info.TCode(), info.ECode())
+	}
+	if clean != "" {
+		b.WriteString(": ")
+		b.WriteString(clean)
+	}
+}
+
 func PrintCleans(error Error) string {
 	var builder strings.Builder
 	slices := _TraceError(error)
-	builder.WriteString(slices[len(slices)-1].info.Clean())
+	_PrintTaggedClean(&builder, slices[len(slices)-1].info)
 	builder.WriteString("\n")
 	nestId := len(slices)
 	for i, slice := range slices[:len(slices)-1] {
 		builder.WriteString(fmt.Sprintf("\tFrom[%d]: ", nestId-i))
-		builder.WriteString(slice.info.Clean())
+		_PrintTaggedClean(&builder, slice.info)
 		builder.WriteString("\n")
 	}
 	return builder.String()
 }
 
-func PrintDetails(error Error, withTrace bool) string {
+func _PrintTaggedDetail(b *strings.Builder, info ErrorInfo) {
+	b.WriteString(_PrintableErrorTag(info))
+	detail := info.Detail()
+	if detail == "" {
+		detail = pErrDefaultMsgSafe(info.TCode(), info.ECode())
+	}
+	if detail != "" {
+		b.WriteString(": ")
+		b.WriteString(detail)
+	}
+}
+
+func PrintDetails(error Error, option *StackPrintOptions) string {
 	var builder strings.Builder
 	slices := _TraceError(error)
-	builder.WriteString(slices[len(slices)-1].info.Detail())
+	_PrintTaggedDetail(&builder, slices[len(slices)-1].info)
 	builder.WriteString("\n")
 	nestId := len(slices)
 	for i, slice := range slices[:len(slices)-1] {
 		builder.WriteString(fmt.Sprintf("\tFrom[%d]: ", nestId-i))
-		builder.WriteString(slice.info.Detail())
+		_PrintTaggedDetail(&builder, slice.info)
 		builder.WriteString("\n")
 	}
-	if withTrace {
-		frames := make([][]_Frame, 0)
+	if option != nil {
+		frames := make([][]StackFrame, 0)
 		for _, slice := range slices {
 			if slice.trace != nil {
 				frames = append(frames, _PC2Frame(slice.trace))
 			}
 		}
+		if option.TrimStack {
+			frames = append(frames, _PC2Frame(pWithTrace()))
+		}
 		if len(frames) > 0 {
 			builder.WriteString("Backtrace:\n")
-			_PrintSegmentedFrames(builder, _CollapseFrames(frames))
+			segments := _CollapseFrames(frames)
+			if option.TrimStack {
+				segments = segments[:len(segments)-1]
+			}
+			_PrintSegmentedFrames(&builder, segments, option.Formatter)
 		}
 	}
 	return builder.String()
 }
 
-type _Frame struct {
-	Func, File string
-	Line       int
-	PC         uintptr
-}
-
-func _PC2Frame(pc []uintptr) (result []_Frame) {
+func _PC2Frame(pc []uintptr) (result []StackFrame) {
 	frames := runtime.CallersFrames(pc)
 	skip := true
 	more := true
@@ -98,22 +160,22 @@ func _PC2Frame(pc []uintptr) (result []_Frame) {
 				continue
 			}
 			// skip all top internal frames from the calm package to reduce noise
-			if strings.Contains(frame.File, "calm/") {
+			if strings.Contains(frame.Function, "calm.") {
 				continue
 			}
 			// collect all the remaining stack from the caller
 			skip = false
 		}
-		result = append(result, _Frame{Func: frame.Function, File: frame.File, Line: frame.Line, PC: frame.PC})
+		result = append(result, StackFrame{Func: frame.Function, File: frame.File, Line: frame.Line, PC: frame.PC})
 	}
 	return
 }
 
 type _Segment struct {
-	Branch, Stem []_Frame
+	Branch, Stem []StackFrame
 }
 
-func _CollapseFrames(all [][]_Frame) (result []_Segment) {
+func _CollapseFrames(all [][]StackFrame) (result []_Segment) {
 	count := len(all)
 	result = make([]_Segment, count)
 	level := 1
@@ -154,20 +216,21 @@ func _CollapseFrames(all [][]_Frame) (result []_Segment) {
 		}
 	}
 	// treat the remaining as stem, set result
-	result[0] = _Segment{Branch: []_Frame{}, Stem: all[0]}
+	result[0] = _Segment{Branch: []StackFrame{}, Stem: all[0]}
 	return
 }
 
-func _PrintSegmentedFrames(builder strings.Builder, s []_Segment) {
-	line := builder.WriteString
+func _PrintSegmentedFrames(builder *strings.Builder, s []_Segment, apply func(frame *StackFrame) string) {
 	nestId := len(s) // this is in reverse, the first segment has the highest nesting depth
 	for i, segment := range s {
 		depth := nestId - i
 		for _, f := range segment.Branch {
-			_, _ = line(fmt.Sprintf("%d|+\t[%016x] %s at (%d:%s)\n", depth, f.PC, f.Func, f.Line, f.File))
+			builder.WriteString(fmt.Sprintf("%d|+\t", depth))
+			builder.WriteString(apply(&f))
 		}
 		for _, f := range segment.Stem {
-			_, _ = line(fmt.Sprintf("%d|[%016x] %s at (%d:%s)\n", depth, f.PC, f.Func, f.Line, f.File))
+			builder.WriteString(fmt.Sprintf("%d|", depth))
+			builder.WriteString(apply(&f))
 		}
 	}
 }
